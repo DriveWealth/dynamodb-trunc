@@ -53,8 +53,9 @@ func main() {
 	flag.IntVar(&pscan, "segments", cores * CoreMultiplier, "The number of parallel scan segments")
 	flag.IntVar(&limit, "limit", 1000, "The parallel scan limit")
 	flag.IntVar(&queueSize, "queue", 1024 * 10, "The processing channel size")
-	flag.IntVar(&maxRetries, "retries", 64, "The maximum number of retries")
-	flag.IntVar(&poolSize, "pool", cores * CoreMultiplier, "The go routine pool size")
+	flag.IntVar(&maxRetries, "retries", 128, "The maximum number of retries")
+	//flag.IntVar(&poolSize, "pool", cores * CoreMultiplier, "The go routine pool size")
+	flag.IntVar(&poolSize, "pool", cores * 64, "The go routine pool size")
 	flag.Parse()
 	if tableName == "" {
 		log.Fatal("No table specified")

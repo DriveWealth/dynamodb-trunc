@@ -36,6 +36,7 @@ type Truncator struct {
 	scanCount 			*int64
 	deleteCount 		*int64
 	segmentsComplete 	*int32
+	deleteRetries		*int32
 	ctx 				context.Context
 	cancelFunc 			context.CancelFunc
 }
@@ -58,6 +59,7 @@ func NewTruncator(client *dynamodb.Client, pool *ants.Pool, tableName string, ps
 		scanCount:	aws.Int64(int64(0)),
 		deleteCount: aws.Int64(int64(0)),
 		segmentsComplete: aws.Int32(int32(0)),
+		deleteRetries: aws.Int32(int32(0)),
 	}
 	return tr.initialize()
 }
@@ -93,6 +95,7 @@ func (t *Truncator) consume() {
 		for {
 		  d :=	<- t.delChan
 			t.pool.Submit(func() {
+
 				t.executeDeletion(t.ctx, d)
 			})
 		}
@@ -102,8 +105,11 @@ func (t *Truncator) consume() {
 func (t *Truncator) monitor() {
 	go func() {
 		for {
+			deletesBefore := atomic.LoadInt64(t.deleteCount)
 			time.Sleep(time.Second * 5)
-			log.Printf("scans=%d, channel=%d, deletes=%d, goroutines=%d, poolbusy=%d\n", atomic.LoadInt64(t.scanCount), len(t.delChan), atomic.LoadInt64(t.deleteCount), runtime.NumGoroutine(), t.pool.Running())
+			deletesAfter := atomic.LoadInt64(t.deleteCount)
+			rate := (deletesAfter - deletesBefore) / 5
+			log.Printf("scans=%d, channel=%d, deletes=%d, rate=%d/sec, goroutines=%d, poolbusy=%d, dretries=%d\n", atomic.LoadInt64(t.scanCount), len(t.delChan), atomic.LoadInt64(t.deleteCount), rate, runtime.NumGoroutine(), t.pool.Running(), atomic.LoadInt32(t.deleteRetries))
 		}
 	}()
 }
@@ -182,7 +188,6 @@ func (t *Truncator) executeDeletion(ctx context.Context, batches []*dynamodb.Bat
 	for i := 0; i < size; i++ {
 		x := i
 		t.pool.Submit(func() {
-
 			t.executeBatch(ctx, batches[x], 0, &wg)
 		})
 	}
@@ -192,12 +197,15 @@ func (t *Truncator) executeDeletion(ctx context.Context, batches []*dynamodb.Bat
 
 func (t *Truncator) executeBatch(ctx context.Context, batch *dynamodb.BatchWriteItemInput, retries int, wg *sync.WaitGroup) {
 	itemCount := len(batch.RequestItems[t.tableName])
+	//log.Printf("Deletion Batch: %d\n", itemCount)
 	output, err := t.client.BatchWriteItem(ctx, batch, func(o *dynamodb.Options) {
 		o.Retryer = t.retrier
 	})
 	if err != nil {
+		atomic.AddInt32(t.deleteRetries, 1)
 		if retries <= t.maxretries {
 			t.pool.Submit(func() {
+				time.Sleep(time.Millisecond * 100) // TODO: Random
 				t.executeBatch(ctx, batch, retries + 1, wg)
 			})
 			return
